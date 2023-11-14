@@ -102,7 +102,7 @@ getInfixOperatorPriority(operator : InfixOperator) -> int {
         InfixSub() : 1;
         InfixMul() : 2;
         InfixDiv() : 2;
-        InfixPow() : 2;
+        InfixPow() : 3;
     }
 }
 
@@ -414,7 +414,11 @@ diffDiv(eR : Exp, eL : Exp, var : string) -> Exp {
 
 diffPow(eR : Exp, eL : Exp, var : string) -> Exp {
     switch (eR : Exp) {
-        Int(i) : Mul(diffAst(eL, var), Mul(Pow(Int(i - 1), eL), eR));
+        Int(i) : if (i - 1 < 0) {
+            Mul(diffAst(eL, var), Mul(Pow(Neg(Int(1 - i)), eL), eR)); 
+        } else {
+            Mul(diffAst(eL, var), Mul(Pow(Int(i - 1), eL), eR)); 
+        }
         default : Mul(Add(Mul(diffAst(eL, var), Div(eL, eR)), Mul(Ln(eL), diffAst(eR, var))), Pow(eR, eL));
     }; 
 }
@@ -442,12 +446,36 @@ diffAst(verifiedAst : Exp, var : string) -> Exp {
     }
 }
 
+simplifyInt(i : int) -> Exp {
+    if (i < 0) { Neg(Int(-i)); } else { Int(i); }
+}
+
 simplifyAdd(eR : Exp, eL : Exp) -> Exp {
     ast = Add(simplifyAst(eR), simplifyAst(eL));
     if (ast.eR == Neg(ast.eL) || ast.eL == Neg(ast.eR)) { Int(0); }
-    else if (ast.eR == Int(0)) { ast.eL; } 
+    else if (ast.eR == Int(0)) { ast.eL; }
     else if (ast.eL == Int(0)) { ast.eR; }
-    else ast;
+    else {
+        switch(ast.eR : Exp) {
+            Int(iR) : switch(ast.eL : Exp) {
+                Int(iL) : simplifyInt(iL + iR);
+                Neg(eLE) : switch(eLE : Exp) {
+                    Int(iNL) : simplifyInt(-iNL + iR);
+                    default : ast;
+                }
+                default : ast;
+            }
+            Neg(eRE) : switch(ast.eL : Exp) {
+                Neg(eLE) : simplifyAst(Neg(Add(eRE, eLE)));
+                Int(iL) : switch(eRE : Exp) {
+                    Int(iNR) : simplifyInt(iL - iNR);
+                    default : ast;
+                }
+                default : ast;
+            }
+            default : ast;
+        }
+    }
 }
 
 simplifySub(eR : Exp, eL : Exp) -> Exp {
@@ -529,6 +557,7 @@ simplifyAst(verifiedAst : Exp) -> Exp {
         Div(eR, eL) : simplifyDiv(eR, eL);
         Neg(e) : simplifyNeg(e);
         Pow(eR, eL) : simplifyPow(eR, eL);
+        Int(i) : simplifyInt(i);
         default : verifiedAst;
     }
 }
@@ -544,55 +573,62 @@ getVars(parameters : Tree<string, string>) -> Tree<string, int> {
 
 testSimplifier() {
     tests : [Pair<Pair<string, string>, Exp>] = [
-        Pair(Pair("Test-1", "x + 0"), Var("x")),
-        Pair(Pair("Test-2", "0 + x"), Var("x")),
-        Pair(Pair("Test-3", "~x + x"), Int(0)),
-        Pair(Pair("Test-4", "x + (~x)"), Int(0)),
+        Pair(Pair("Test-1.1", "x + 0"), Var("x")),
+        Pair(Pair("Test-1.2", "0 + x"), Var("x")),
+        Pair(Pair("Test-1.3", "~x + x"), Int(0)),
+        Pair(Pair("Test-1.4", "x + (~x)"), Int(0)),
+        Pair(Pair("Test-1.5", "5 + 4 + 3 + 2 + 1"), Int(15)),
+        Pair(Pair("Test-1.6", "(5 + 4) * x"), Mul(Var("x"), Int(9))),
+        Pair(Pair("Test-1.7", "~5 + 4"), Neg(Int(1))),
+        Pair(Pair("Test-1.8", "~5 + 4 + (~6 + (~3))"), Neg(Int(10))),
+        Pair(Pair("Test-1.9", "(~5 + 4 + (~6 + (~3))) * x"), Neg(Mul(Var("x"), Int(10)))),
 
-        Pair(Pair("Test-5", "x - 0"), Var("x")),
-        Pair(Pair("Test-6", "0 - x"), Neg(Var("x"))),
-        Pair(Pair("Test-7", "x - x"), Int(0)),
+        Pair(Pair("Test-2.1", "x - 0"), Var("x")),
+        Pair(Pair("Test-2.2", "0 - x"), Neg(Var("x"))),
+        Pair(Pair("Test-2.3", "x - x"), Int(0)),
 
-        Pair(Pair("Test-8", "0 / x"), Int(0)),
-        Pair(Pair("Test-9", "x / 1"), Var("x")),
-        Pair(Pair("Test-10", "x / (~1)"), Neg(Var("x"))),
-        Pair(Pair("Test-11", "x / x"), Int(1)),
-        Pair(Pair("Test-12", "~x / x"), Neg(Int(1))),
-        Pair(Pair("Test-13", "x / (~x)"), Neg(Int(1))),
-        Pair(Pair("Test-14", "1 / (1 / x)"), Var("x")),
-        Pair(Pair("Test-15", "1 / (~1 / x)"), Neg(Var("x"))),
-        Pair(Pair("Test-16", "~1 / (1 / x)"), Neg(Var("x"))),
-        Pair(Pair("Test-17", "~1 / (~1 / x)"), Var("x")),
+        Pair(Pair("Test-3.1", "0 / x"), Int(0)),
+        Pair(Pair("Test-3.2", "x / 1"), Var("x")),
+        Pair(Pair("Test-3.3", "x / (~1)"), Neg(Var("x"))),
+        Pair(Pair("Test-3.4", "x / x"), Int(1)),
+        Pair(Pair("Test-3.5", "~x / x"), Neg(Int(1))),
+        Pair(Pair("Test-3.6", "x / (~x)"), Neg(Int(1))),
+        Pair(Pair("Test-3.7", "1 / (1 / x)"), Var("x")),
+        Pair(Pair("Test-3.8", "1 / (~1 / x)"), Neg(Var("x"))),
+        Pair(Pair("Test-3.9", "~1 / (1 / x)"), Neg(Var("x"))),
+        Pair(Pair("Test-3.10", "~1 / (~1 / x)"), Var("x")),
 
-        Pair(Pair("Test-18", "x * 0"), Int(0)),
-        Pair(Pair("Test-19", "0 * x"), Int(0)),
-        Pair(Pair("Test-20", "1 * x"), Var("x")),
-        Pair(Pair("Test-21", "x * 1"), Var("x")),
-        Pair(Pair("Test-22", "x * (~1)"), Neg(Var("x"))),
-        Pair(Pair("Test-23", "~1 * x"), Neg(Var("x"))),
-        Pair(Pair("Test-24", "x * 1 / x"), Int(1)),
-        Pair(Pair("Test-25", "1 / x * x"), Int(1)),
-        Pair(Pair("Test-26", "x * (~1) / x"), Neg(Int(1))),
-        Pair(Pair("Test-27", "(~1) / x * x"), Neg(Int(1))),
-        Pair(Pair("Test-28", "x * x"), Pow(Int(2), Var("x"))),
-        Pair(Pair("Test-29", "x * (~x)"), Neg(Pow(Int(2), Var("x")))),
-        Pair(Pair("Test-30", "~x * x"), Neg(Pow(Int(2), Var("x")))),
+        Pair(Pair("Test-4.1", "x * 0"), Int(0)),
+        Pair(Pair("Test-4.2", "0 * x"), Int(0)),
+        Pair(Pair("Test-4.3", "1 * x"), Var("x")),
+        Pair(Pair("Test-4.4", "x * 1"), Var("x")),
+        Pair(Pair("Test-4.5", "x * (~1)"), Neg(Var("x"))),
+        Pair(Pair("Test-4.6", "~1 * x"), Neg(Var("x"))),
+        Pair(Pair("Test-4.7", "x * 1 / x"), Int(1)),
+        Pair(Pair("Test-4.8", "1 / x * x"), Int(1)),
+        Pair(Pair("Test-4.9", "x * (~1) / x"), Neg(Int(1))),
+        Pair(Pair("Test-4.10", "(~1) / x * x"), Neg(Int(1))),
+        Pair(Pair("Test-4.11", "x * x"), Pow(Int(2), Var("x"))),
+        Pair(Pair("Test-4.12", "x * (~x)"), Neg(Pow(Int(2), Var("x")))),
+        Pair(Pair("Test-4.13", "~x * x"), Neg(Pow(Int(2), Var("x")))),
 
-        Pair(Pair("Test-31", "~1"), Neg(Int(1))),
-        Pair(Pair("Test-32", "~(~1)"), Int(1)),
-        Pair(Pair("Test-33", "~0"), Int(0)),
+        Pair(Pair("Test-5.1", "~1"), Neg(Int(1))),
+        Pair(Pair("Test-5.2", "~(~1)"), Int(1)),
+        Pair(Pair("Test-5.3", "~0"), Int(0)),
         
-        Pair(Pair("Test-34", "x ^ 0"), Int(1)),
-        Pair(Pair("Test-35", "(x + 0) ^ 1"), Var("x"))
+        Pair(Pair("Test-6.1", "x ^ 0"), Int(1)),
+        Pair(Pair("Test-6.2", "(x + 0) ^ 1"), Var("x"))
     ];
 
     map(tests, \i -> {
         result = simplifyAst(infixToAst(i.first.second)) == i.second;
-        println(i.first.first + ": " + if (result) { "true"; } else { "false"; });
+        println("Simplifier: " + i.first.first + ": " + if (result) { "true"; } else { "false"; });
     });
 }
 
 main() {
-    testSimplifier();
+    // testSimplifier();
+    // println(simplifyAst(diffAst(infixToAst("(x + 5) ^ (x + 4) / (X ^ 2)"), "x")));
+    println(astToInfix(simplifyAst(diffAst(infixToAst("3 * x + 4 * x ^ 2 + x ^ 3"), "x"))));
     quit(0);
 }
