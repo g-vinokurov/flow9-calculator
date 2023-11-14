@@ -519,6 +519,9 @@ simplifyAdd(eRight : Exp, eLeft : Exp) -> Exp {
     else if (eR == Int(0)) { eL; }
     else if (eL == Int(0)) { eR; }
     else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Neg(Add(sE(eR), sE(eL)))); }
+    else if (isNeg(eL)) { simplifyAst(Sub(sE(eL), eR)); }
+    else if (isNeg(eR)) { simplifyAst(Sub(sE(eR), eL)); }
     else ast;
 }
 
@@ -530,6 +533,9 @@ simplifySub(eRight : Exp, eLeft : Exp) -> Exp {
     else if (eL == Int(0)) { simplifyAst(Neg(eR)); }
     else if (eL == eR) { Int(0); }
     else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Neg(Sub(sE(eR), sE(eL)))); }
+    else if (isNeg(eL)) { simplifyAst(Neg(Add(eR, sE(eL)))); }
+    else if (isNeg(eR)) { simplifyAst(Add(sE(eR), eL)); }
     else ast;
 }
 
@@ -545,6 +551,9 @@ simplifyDiv(eRight : Exp, eLeft : Exp) -> Exp {
     else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Div(sE(eR), sE(eL))); }
     else if (isNeg(eL)) { simplifyAst(Neg(Div(eR, sE(eL)))); }
     else if (isNeg(eR)) { simplifyAst(Neg(Div(sE(eR), eL))); }
+    else if (isPow(eL) && isPow(eR) && sL(eL) == sL(eR)) { simplifyAst(Pow(Sub(sR(eR), sR(eL)), sL(eL))); }
+    else if (isPow(eL) && sL(eL) == eR) { simplifyAst(Pow(Sub(Int(1), sR(eL)), eR)); }
+    else if (isPow(eR) && eL == sL(eR)) { simplifyAst(Pow(Sub(sR(eR), Int(1)), eL)); }
     else ast;
 }
 
@@ -558,10 +567,13 @@ simplifyMul(eRight : Exp, eLeft : Exp) -> Exp {
     else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
     else if (eR == Div(eL, Int(1))) { Int(1); }
     else if (eL == Div(eR, Int(1))) { Int(1); }
-    else if (eL == eR) { simplifyAst(Pow(Int(2), eL)); }
     else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Mul(sE(eR), sE(eL))); }
     else if (isNeg(eL)) { simplifyAst(Neg(Mul(eR, sE(eL)))); }
     else if (isNeg(eR)) { simplifyAst(Neg(Mul(sE(eR), eL))); }
+    else if (eL == eR) { simplifyAst(Pow(Int(2), eL)); }
+    else if (isPow(eL) && isPow(eR) && sL(eL) == sL(eR)) { simplifyAst(Pow(Add(sR(eR), sR(eL)), sL(eL))); }
+    else if (isPow(eL) && sL(eL) == eR) { simplifyAst(Pow(Add(Int(1), sR(eL)), eR)); }
+    else if (isPow(eR) && eL == sL(eR)) { simplifyAst(Pow(Add(sR(eR), Int(1)), eL)); }
     else ast;
 }
 
@@ -572,6 +584,8 @@ simplifyPow(eRight : Exp, eLeft : Exp) -> Exp {
     if (eR == Int(0)) { Int(1); }
     else if (eR == Int(1)) { eL; }
     else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else if (isNeg(eL) && isConst(eR) && modInt(eR, Int(2)) == 0) { simplifyAst(Pow(eR, sE(eL))); }
+    else if (isNeg(eL) && isConst(eR) && modInt(eR, Int(2)) != 0) { simplifyAst(Neg(Pow(eR, sE(eL)))); }
     else ast;
 }
 
@@ -611,6 +625,9 @@ testSimplifier() {
         Pair(Pair("Test-1.10", "~2 + (~4)"), Neg(Int(6))),
         Pair(Pair("Test-1.11", "~5 + 4 + (~6 + (~3))"), Neg(Int(10))),
         Pair(Pair("Test-1.12", "(~5 + 4 + (~6 + (~3))) * x"), Neg(Mul(Var("x"), Int(10)))),
+        Pair(Pair("Test-1.13", "~x + (~y)"), Neg(Add(Var("y"), Var("x")))),
+        Pair(Pair("Test-1.14", "~x + y"), Sub(Var("x"), Var("y"))),
+        Pair(Pair("Test-1.15", "x + (~y)"), Sub(Var("y"), Var("x"))),
 
         Pair(Pair("Test-2.1", "x - 0"), Var("x")),
         Pair(Pair("Test-2.2", "0 - x"), Neg(Var("x"))),
@@ -621,6 +638,9 @@ testSimplifier() {
         Pair(Pair("Test-2.7", "~5 - (~4)"), Neg(Int(1))),
         Pair(Pair("Test-2.8", "~5 - 4 - (~6 - (~3))"), Neg(Int(6))),
         Pair(Pair("Test-2.9", "(~5 - 4 - (~6 - (~3))) * x"), Neg(Mul(Var("x"), Int(6)))),
+        Pair(Pair("Test-2.10", "~x - (~y)"), Neg(Sub(Var("y"), Var("x")))),
+        Pair(Pair("Test-2.11", "~x - y"), Neg(Add(Var("y"), Var("x")))),
+        Pair(Pair("Test-2.12", "x - (~y)"), Add(Var("y"), Var("x"))),
 
         Pair(Pair("Test-3.1", "0 / x"), Int(0)),
         Pair(Pair("Test-3.2", "x / 1"), Var("x")),
@@ -637,6 +657,9 @@ testSimplifier() {
         Pair(Pair("Test-3.13", "~4 / 2"), Neg(Int(2))),
         Pair(Pair("Test-3.14", "~4 / (~2)"), Int(2)),
         Pair(Pair("Test-3.15", "4 / 3"), Div(Int(3), Int(4))),
+        Pair(Pair("Test-3.16", "(x ^ y) / (x ^ z)"), Pow(Sub(Var("z"), Var("y")), Var("x"))),
+        Pair(Pair("Test-3.17", "(x ^ y) / x"), Pow(Sub(Int(1), Var("y")), Var("x"))),
+        Pair(Pair("Test-3.18", "x / (x ^ y)"), Pow(Sub(Var("y"), Int(1)), Var("x"))),
 
         Pair(Pair("Test-4.1", "x * 0"), Int(0)),
         Pair(Pair("Test-4.2", "0 * x"), Int(0)),
@@ -648,16 +671,30 @@ testSimplifier() {
         Pair(Pair("Test-4.8", "1 / x * x"), Int(1)),
         Pair(Pair("Test-4.9", "x * (~1) / x"), Neg(Int(1))),
         Pair(Pair("Test-4.10", "(~1) / x * x"), Neg(Int(1))),
-        Pair(Pair("Test-4.11", "x * x"), Pow(Int(2), Var("x"))),
-        Pair(Pair("Test-4.12", "x * (~x)"), Neg(Pow(Int(2), Var("x")))),
-        Pair(Pair("Test-4.13", "~x * x"), Neg(Pow(Int(2), Var("x")))),
+        Pair(Pair("Test-4.11", "5 * 4"), Int(20)),
+        Pair(Pair("Test-4.12", "~5 * 4"), Neg(Int(20))),
+        Pair(Pair("Test-4.13", "2 * (~4)"), Neg(Int(8))),
+        Pair(Pair("Test-4.14", "~5 * (~4)"), Int(20)),
+        Pair(Pair("Test-4.15", "~5 * 4 * (~6 * (~3))"), Neg(Int(360))),
+        Pair(Pair("Test-4.16", "(~5 * 4 * (~6 * (~3))) * x"), Neg(Mul(Var("x"), Int(360)))),
+        Pair(Pair("Test-4.17", "x * x"), Pow(Int(2), Var("x"))),
+        Pair(Pair("Test-4.18", "x * (~x)"), Neg(Pow(Int(2), Var("x")))),
+        Pair(Pair("Test-4.19", "~x * x"), Neg(Pow(Int(2), Var("x")))),
+        Pair(Pair("Test-4.20", "~x * (~x)"), Pow(Int(2), Var("x"))),
+        Pair(Pair("Test-4.21", "(x ^ y) * (x ^ z)"), Pow(Add(Var("z"), Var("y")), Var("x"))),
+        Pair(Pair("Test-4.22", "(x ^ y) * x"), Pow(Add(Int(1), Var("y")), Var("x"))),
+        Pair(Pair("Test-4.23", "x * (x ^ y)"), Pow(Add(Var("y"), Int(1)), Var("x"))),
 
         Pair(Pair("Test-5.1", "~1"), Neg(Int(1))),
         Pair(Pair("Test-5.2", "~(~1)"), Int(1)),
         Pair(Pair("Test-5.3", "~0"), Int(0)),
         
         Pair(Pair("Test-6.1", "x ^ 0"), Int(1)),
-        Pair(Pair("Test-6.2", "(x + 0) ^ 1"), Var("x"))
+        Pair(Pair("Test-6.2", "(x + 0) ^ 1"), Var("x")),
+        Pair(Pair("Test-6.3", "~x ^ 4"), Pow(Int(4), Var("x"))),
+        Pair(Pair("Test-6.4", "~x ^ 5"), Neg(Pow(Int(5), Var("x")))),
+        Pair(Pair("Test-6.5", "~x ^ ~4"), Pow(Neg(Int(4)), Var("x"))),
+        Pair(Pair("Test-6.6", "~x ^ ~5"), Neg(Pow(Neg(Int(5)), Var("x")))),
     ];
 
     map(tests, \i -> {
