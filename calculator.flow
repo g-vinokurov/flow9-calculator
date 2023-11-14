@@ -66,6 +66,66 @@ InfixPow();
 
 InfixTokens(ts : [InfixToken]);
 
+sI(intAsExp : Exp) -> int {
+    if (isNegConst(intAsExp)) {
+        sI(sE(intAsExp));
+    } else switch (intAsExp : Exp) {
+        Int(i) : i;
+        default : 0;
+    }
+}
+
+// subexpression
+sE(e : Exp) -> Exp { 
+    switch(e : Exp) { 
+        Neg(eN) : eN;
+        Ln(eL) : eL; 
+        default : Pass(); 
+    } 
+}
+
+// Left subexpression 
+sL(e : Exp) -> Exp { 
+    switch(e : Exp) {
+        Add(eR, eL) : eL;
+        Sub(eR, eL) : eL;
+        Mul(eR, eL) : eL;
+        Div(eR, eL) : eL;
+        Pow(eR, eL) : eL;
+        default : Pass(); 
+    }
+}
+
+// Right subexpression 
+sR(e : Exp) -> Exp { 
+    switch(e : Exp) {
+        Add(eR, eL) : eR;
+        Sub(eR, eL) : eR;
+        Mul(eR, eL) : eR;
+        Div(eR, eL) : eR;
+        Pow(eR, eL) : eR;
+        default : Pass(); 
+    }
+}
+
+isPosConst(e : Exp) -> bool { switch (e : Exp) { Int(i) : (i > 0); default : false; } }
+isNegConst(e : Exp) -> bool { isNeg(e) && isPosConst(sE(e)); }
+isZero(e : Exp) -> bool { e == Int(0); }
+isConst(e : Exp) -> bool { isNegConst(e) || isZero(e) || isPosConst(e); }
+isVar(e : Exp) -> bool { switch (e : Exp) { Var(v) : true; default : false; } }
+isNeg(e : Exp) -> bool { switch (e : Exp) { Neg(eN) : true; default : false; } }
+isLn(e : Exp) -> bool { switch (e : Exp) { Ln(eL) : true; default : false; } }
+isAdd(e : Exp) -> bool { switch (e : Exp) { Add(eR, eL) : true; default : false; } }
+isSub(e : Exp) -> bool { switch (e : Exp) { Sub(eR, eL) : true; default : false; } }
+isMul(e : Exp) -> bool { switch (e : Exp) { Mul(eR, eL) : true; default : false; } }
+isDiv(e : Exp) -> bool { switch (e : Exp) { Div(eR, eL) : true; default : false; } }
+isPow(e : Exp) -> bool { switch (e : Exp) { Pow(eR, eL) : true; default : false; } }
+
+modInt(eL : Exp, eR : Exp) -> int { mod(sI(eL), sI(eR)); }
+
+isUnaryOperator(e : Exp) -> bool { isNeg(e) || isLn(e); }
+isBinaryOperator(e : Exp) -> bool { isAdd(e) || isSub(e) || isMul(e) || isDiv(e) || isPow(e); }
+
 popExp(dlist : DList<Exp>) -> Exp {
     either(popDList(dlist), Err("Stack is empty"));
 }
@@ -257,18 +317,14 @@ tokenizeInfix(exprStr : string) -> [InfixToken] {
 }
 
 verifyAst(ast : Exp) -> bool {
-    switch (ast : Exp) {
-        Add(eR, eL) : verifyAst(eR) && verifyAst(eL);
-        Sub(eR, eL) : verifyAst(eR) && verifyAst(eL);
-        Mul(eR, eL) : verifyAst(eR) && verifyAst(eL);
-        Div(eR, eL) : verifyAst(eR) && verifyAst(eL);
-        Pow(eR, eL) : verifyAst(eR) && verifyAst(eL);
-        Neg(e) : verifyAst(e);
-        Ln(e) : verifyAst(e);
-        Pass() : true;
-        Int(i) : true;
-        Var(v) : true;
-        Err(msg) : {println(msg); false};
+    if (isBinaryOperator(ast)) { 
+        verifyAst(sR(ast)) && verifyAst(sL(ast));
+    } else if (isUnaryOperator(ast)) { 
+        verifyAst(sE(ast)); 
+    } else if (ast == Pass() || isConst(ast) || isVar(ast)) { 
+        true; 
+    } else {
+        false; 
     }
 }
 
@@ -342,7 +398,7 @@ substituteVarsToAst(verifiedAst : Exp, vars : Tree<string, int>) -> Exp {
             if (value == None()) {
                 Var(v);
             } else {
-                Int(either(value, 0));
+                simplifyInt(either(value, 0));
             }
         };
         Add(eR, eL) : Add(substituteVarsToAst(eR, vars), substituteVarsToAst(eL, vars));
@@ -414,13 +470,9 @@ diffDiv(eR : Exp, eL : Exp, var : string) -> Exp {
 
 diffPow(eR : Exp, eL : Exp, var : string) -> Exp {
     switch (eR : Exp) {
-        Int(i) : if (i - 1 < 0) {
-            Mul(diffAst(eL, var), Mul(Pow(Neg(Int(1 - i)), eL), eR)); 
-        } else {
-            Mul(diffAst(eL, var), Mul(Pow(Int(i - 1), eL), eR)); 
-        }
+        Int(i) : Mul(diffAst(eL, var), Mul(Pow(simplifyInt(i - 1), eL), eR)); 
         default : Mul(Add(Mul(diffAst(eL, var), Div(eL, eR)), Mul(Ln(eL), diffAst(eR, var))), Pow(eR, eL));
-    }; 
+    }
 }
 
 diffNeg(e : Exp, var : string) -> Exp {
@@ -450,67 +502,6 @@ simplifyInt(i : int) -> Exp {
     if (i < 0) { Neg(Int(-i)); } else { Int(i); }
 }
 
-simplifyAdd(eR : Exp, eL : Exp) -> Exp {
-    ast = Add(simplifyAst(eR), simplifyAst(eL));
-    if (ast.eR == Neg(ast.eL) || ast.eL == Neg(ast.eR)) { Int(0); }
-    else if (ast.eR == Int(0)) { ast.eL; }
-    else if (ast.eL == Int(0)) { ast.eR; }
-    else {
-        switch(ast.eR : Exp) {
-            Int(iR) : switch(ast.eL : Exp) {
-                Int(iL) : simplifyInt(iL + iR);
-                Neg(eLE) : switch(eLE : Exp) {
-                    Int(iNL) : simplifyInt(-iNL + iR);
-                    default : ast;
-                }
-                default : ast;
-            }
-            Neg(eRE) : switch(ast.eL : Exp) {
-                Neg(eLE) : simplifyAst(Neg(Add(eRE, eLE)));
-                Int(iL) : switch(eRE : Exp) {
-                    Int(iNR) : simplifyInt(iL - iNR);
-                    default : ast;
-                }
-                default : ast;
-            }
-            default : ast;
-        }
-    }
-}
-
-simplifySub(eR : Exp, eL : Exp) -> Exp {
-    ast = Sub(simplifyAst(eR), simplifyAst(eL));
-    if (ast.eR == Int(0)) { ast.eL; } 
-    else if (ast.eL == Int(0)) { simplifyAst(Neg(ast.eR)); }
-    else if (ast.eL == ast.eR) { Int(0); }
-    else ast;
-}
-
-simplifyDiv(eR : Exp, eL : Exp) -> Exp {
-    ast = Div(simplifyAst(eR), simplifyAst(eL));
-    if (ast.eL == Int(0)) { Int(0); }
-    else if (ast.eR == Int(1)) { ast.eL; } 
-    else if (ast.eL == ast.eR && ast.eR != Int(0)) { Int(1); }
-    else if (ast.eL == Int(1)) {
-        switch (ast.eR : Exp) {
-            Div(eRR, eRL) : simplifyAst(Div(eRL, eRR));
-            Neg(eRE) : simplifyAst(Neg(Div(eRE, Int(1))));
-            default : ast;
-        }
-    } else {
-        switch(ast.eR : Exp) {
-            Neg(eRE) : switch(ast.eL : Exp) {
-                Neg(eLE) : simplifyAst(Div(eRE, eLE));
-                default : simplifyAst(Neg(Div(eRE, ast.eL)));
-            }
-            default : switch(ast.eL : Exp) {
-                Neg(eLE) : simplifyAst(Neg(Div(ast.eR, eLE)));
-                default : ast;
-            }
-        }
-    }
-}
-
 simplifyNeg(e : Exp) -> Exp {
     ast = Neg(simplifyAst(e));
     switch (ast.e : Exp) {
@@ -520,33 +511,68 @@ simplifyNeg(e : Exp) -> Exp {
     }
 }
 
-simplifyPow(eR : Exp, eL : Exp) -> Exp {
-    ast = Pow(simplifyAst(eR), simplifyAst(eL));
-    if (ast.eR == Int(0)) { Int(1); }
-    else if (ast.eR == Int(1)) { ast.eL; }
+simplifyAdd(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Add(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eR == Neg(eL) || eL == Neg(eR)) { Int(0); }
+    else if (eR == Int(0)) { eL; }
+    else if (eL == Int(0)) { eR; }
+    else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
     else ast;
 }
 
-simplifyMul(eR : Exp, eL : Exp) -> Exp {
-    ast = Mul(simplifyAst(eR), simplifyAst(eL));
-    if (ast.eR == Int(0) || ast.eL == Int(0)) { Int(0); }
-    else if (ast.eR == Int(1)) { ast.eL; } 
-    else if (ast.eL == Int(1)) { ast.eR; }
-    else if (ast.eR == Div(ast.eL, Int(1))) { Int(1); }
-    else if (ast.eL == Div(ast.eR, Int(1))) { Int(1); }
-    else if (ast.eL == ast.eR) { simplifyAst(Pow(Int(2), ast.eL)); }
-    else {
-        switch(ast.eR : Exp) {
-            Neg(eRE) : switch(ast.eL : Exp) {
-                Neg(eLE) : simplifyAst(Mul(eRE, eLE));
-                default : simplifyAst(Neg(Mul(eRE, ast.eL)));
-            }
-            default : switch(ast.eL : Exp) {
-                Neg(eLE) : simplifyAst(Neg(Mul(ast.eR, eLE)));
-                default : ast;
-            }
-        }
-    }
+simplifySub(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Sub(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eR == Int(0)) { eL; } 
+    else if (eL == Int(0)) { simplifyAst(Neg(eR)); }
+    else if (eL == eR) { Int(0); }
+    else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else ast;
+}
+
+simplifyDiv(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Div(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eL == Int(0)) { Int(0); }
+    else if (eR == Int(1)) { eL; } 
+    else if (eL == eR && eR != Int(0)) { Int(1); }
+    else if (isConst(eL) && isConst(eR) && modInt(eL, eR) == 0) { simplifyInt(calculateAst(ast)); }
+    else if (eL == Int(1) && isDiv(eR)) { simplifyAst(Div(sL(eR), sR(eR))); }
+    else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Div(sE(eR), sE(eL))); }
+    else if (isNeg(eL)) { simplifyAst(Neg(Div(eR, sE(eL)))); }
+    else if (isNeg(eR)) { simplifyAst(Neg(Div(sE(eR), eL))); }
+    else ast;
+}
+
+simplifyMul(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Mul(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eR == Int(0) || eL == Int(0)) { Int(0); }
+    else if (eR == Int(1)) { eL; } 
+    else if (eL == Int(1)) { eR; }
+    else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else if (eR == Div(eL, Int(1))) { Int(1); }
+    else if (eL == Div(eR, Int(1))) { Int(1); }
+    else if (eL == eR) { simplifyAst(Pow(Int(2), eL)); }
+    else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Mul(sE(eR), sE(eL))); }
+    else if (isNeg(eL)) { simplifyAst(Neg(Mul(eR, sE(eL)))); }
+    else if (isNeg(eR)) { simplifyAst(Neg(Mul(sE(eR), eL))); }
+    else ast;
+}
+
+simplifyPow(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Pow(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eR == Int(0)) { Int(1); }
+    else if (eR == Int(1)) { eL; }
+    else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else ast;
 }
 
 simplifyAst(verifiedAst : Exp) -> Exp {
@@ -579,13 +605,22 @@ testSimplifier() {
         Pair(Pair("Test-1.4", "x + (~x)"), Int(0)),
         Pair(Pair("Test-1.5", "5 + 4 + 3 + 2 + 1"), Int(15)),
         Pair(Pair("Test-1.6", "(5 + 4) * x"), Mul(Var("x"), Int(9))),
-        Pair(Pair("Test-1.7", "~5 + 4"), Neg(Int(1))),
-        Pair(Pair("Test-1.8", "~5 + 4 + (~6 + (~3))"), Neg(Int(10))),
-        Pair(Pair("Test-1.9", "(~5 + 4 + (~6 + (~3))) * x"), Neg(Mul(Var("x"), Int(10)))),
+        Pair(Pair("Test-1.7", "5 + 4"), Int(9)),
+        Pair(Pair("Test-1.8", "~5 + 4"), Neg(Int(1))),
+        Pair(Pair("Test-1.9", "2 + (~4)"), Neg(Int(2))),
+        Pair(Pair("Test-1.10", "~2 + (~4)"), Neg(Int(6))),
+        Pair(Pair("Test-1.11", "~5 + 4 + (~6 + (~3))"), Neg(Int(10))),
+        Pair(Pair("Test-1.12", "(~5 + 4 + (~6 + (~3))) * x"), Neg(Mul(Var("x"), Int(10)))),
 
         Pair(Pair("Test-2.1", "x - 0"), Var("x")),
         Pair(Pair("Test-2.2", "0 - x"), Neg(Var("x"))),
         Pair(Pair("Test-2.3", "x - x"), Int(0)),
+        Pair(Pair("Test-2.4", "5 - 4"), Int(1)),
+        Pair(Pair("Test-2.5", "~5 - 4"), Neg(Int(9))),
+        Pair(Pair("Test-2.6", "2 - (~4)"), Int(6)),
+        Pair(Pair("Test-2.7", "~5 - (~4)"), Neg(Int(1))),
+        Pair(Pair("Test-2.8", "~5 - 4 - (~6 - (~3))"), Neg(Int(6))),
+        Pair(Pair("Test-2.9", "(~5 - 4 - (~6 - (~3))) * x"), Neg(Mul(Var("x"), Int(6)))),
 
         Pair(Pair("Test-3.1", "0 / x"), Int(0)),
         Pair(Pair("Test-3.2", "x / 1"), Var("x")),
@@ -597,6 +632,11 @@ testSimplifier() {
         Pair(Pair("Test-3.8", "1 / (~1 / x)"), Neg(Var("x"))),
         Pair(Pair("Test-3.9", "~1 / (1 / x)"), Neg(Var("x"))),
         Pair(Pair("Test-3.10", "~1 / (~1 / x)"), Var("x")),
+        Pair(Pair("Test-3.11", "4 / 2"), Int(2)),
+        Pair(Pair("Test-3.12", "4 / (~2)"), Neg(Int(2))),
+        Pair(Pair("Test-3.13", "~4 / 2"), Neg(Int(2))),
+        Pair(Pair("Test-3.14", "~4 / (~2)"), Int(2)),
+        Pair(Pair("Test-3.15", "4 / 3"), Div(Int(3), Int(4))),
 
         Pair(Pair("Test-4.1", "x * 0"), Int(0)),
         Pair(Pair("Test-4.2", "0 * x"), Int(0)),
@@ -622,13 +662,13 @@ testSimplifier() {
 
     map(tests, \i -> {
         result = simplifyAst(infixToAst(i.first.second)) == i.second;
-        println("Simplifier: " + i.first.first + ": " + if (result) { "true"; } else { "false"; });
+        println("Simplifier: " + i.first.first + ": " + if (result) { "PASSED"; } else { "FAILURE"; });
     });
 }
 
 main() {
-    // testSimplifier();
+    testSimplifier();
     // println(simplifyAst(diffAst(infixToAst("(x + 5) ^ (x + 4) / (X ^ 2)"), "x")));
-    println(astToInfix(simplifyAst(diffAst(infixToAst("3 * x + 4 * x ^ 2 + x ^ 3"), "x"))));
+    // println(astToInfix(simplifyAst(diffAst(infixToAst("3 * x + 4 * x ^ 2 + x ^ 3"), "x"))));
     quit(0);
 }
