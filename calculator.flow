@@ -589,6 +589,7 @@ simplifyPow(eRight : Exp, eLeft : Exp) -> Exp {
     else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
     else if (isNeg(eL) && isConst(eR) && modInt(eR, Int(2)) == 0) { simplifyAst(Pow(eR, sE(eL))); }
     else if (isNeg(eL) && isConst(eR) && modInt(eR, Int(2)) != 0) { simplifyAst(Neg(Pow(eR, sE(eL)))); }
+    else if (isNeg(eR)) { simplifyAst(Div(Pow(sE(eR), eL), Int(1))); }
     else if (isPow(eL)) { simplifyAst(Pow(Mul(eR, sR(eL)), sL(eL))); }
     else ast;
 }
@@ -662,6 +663,48 @@ generalizeAst(verifiedAst : Exp) -> Div {
         Div(eR, eL) : generalizeDiv(eR, eL);
         Neg(e) : generalizeNeg(e);
         default : Div(Int(1), verifiedAst);
+    }
+}
+
+newtonPolynomial(eL : Exp, eR : Exp, k : int) -> Exp {
+    if (k <= 0) {
+        Int(1);
+    } else {
+        Mul(newtonPolynomial(eL, eR, k - 1), Add(eR, eL));
+    }
+}
+
+distributeAst(nonDivAst : Exp) -> Exp {
+    switch (nonDivAst : Exp) {
+        Add(eRight, eLeft) : Add(distributeAst(eRight), distributeAst(eLeft));
+        Sub(eRight, eLeft) : Add(distributeAst(Neg(eRight)), distributeAst(eLeft));
+        Mul(eRight, eLeft) : {
+            ast = Mul(distributeAst(eRight), distributeAst(eLeft));
+            eR = ast.eR;
+            eL = ast.eL;
+            // (x + y) * z = x * z + y * z
+            // x * (y + z) = x * y + x * z
+            if (isAdd(eL)) { distributeAst(Add(Mul(eR, sR(eL)), Mul(eR, sL(eL)))); }
+            else if (isAdd(eR)) { distributeAst(Add(Mul(sR(eR), eL), Mul(sL(eR), eL))); }
+            else ast;
+        }
+        Pow(eRight, eLeft) : {
+            ast = Pow(distributeAst(eRight), distributeAst(eLeft));
+            eR = ast.eR;
+            eL = ast.eL;
+            if (isPosConst(eR) && isAdd(eL)) { distributeAst(newtonPolynomial(sL(eL), sR(eL), sI(eR))); }
+            else if (isMul(eL)) { distributeAst(Mul(Pow(eR, sR(eL)), Pow(eR, sL(eL)))); }
+            else ast;
+        }
+        Neg(e) : {
+            ast = Neg(distributeAst(e));
+            // ~(x + y) == ~x + ~y
+            // ~(x * y) == ~x * y
+            if (isAdd(ast.e)) { distributeAst(Add(Neg(sR(ast.e)), Neg(sL(ast.e)))); }
+            else if (isMul(ast.e)) { distributeAst(Mul(sR(ast.e), Neg(sL(ast.e)))); }
+            else ast;
+        }
+        default : nonDivAst;
     }
 }
 
@@ -765,6 +808,7 @@ testSimplifier() {
         Pair(Pair("Test-6.5", "~x ^ ~4"), Pow(Neg(Int(4)), Var("x"))),
         Pair(Pair("Test-6.6", "~x ^ ~5"), Neg(Pow(Neg(Int(5)), Var("x")))),
         Pair(Pair("Test-6.7", "(x ^ y) ^ z"), Pow(Mul(Var("z"), Var("y")), Var("x"))),
+        Pair(Pair("Test-6.7", "x ^ (~y)"), Div(Pow(Var("y"), Var("x")), Int(1))),
     ];
 
     map(tests, \i -> {
@@ -805,7 +849,7 @@ testGeneralizer() {
 
 main() {
     // testSimplifier();
-    testGeneralizer();
+    // testGeneralizer();
     // println(simplifyAst(diffAst(infixToAst("(x + 5) ^ (x + 4) / (X ^ 2)"), "x")));
     // println(astToInfix(simplifyAst(diffAst(infixToAst("3 * x + 4 * x ^ 2 + x ^ 3"), "x"))));
     quit(0);
