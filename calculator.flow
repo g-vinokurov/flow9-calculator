@@ -1,0 +1,1380 @@
+import runtime;
+
+import ds/dlist;
+import ds/tuples;
+import ds/array;
+import ds/arrayutils;
+import ds/set;
+
+import math/math;
+import algorithms;
+
+import string_utils;
+import string;
+
+import lingo/pegcode/driver;
+
+
+
+// ----------------------------------------------------------------------
+//   Expressions
+// ----------------------------------------------------------------------
+
+Exp ::= Err, Int, Var, Op;
+Err(msg : string);
+Int(i : int);
+Var(v : string);
+
+Op ::= Pass, UnaryOp, BinaryOp;
+Pass();
+
+UnaryOp ::= Neg, Ln;
+Neg(e : Exp);
+Ln(e : Exp);
+
+BinaryOp ::= Add, Sub, Mul, Div, Pow;
+Add(eR : Exp, eL : Exp);
+Sub(eR : Exp, eL : Exp);
+Mul(eR : Exp, eL : Exp);
+Div(eR : Exp, eL : Exp);
+Pow(eR : Exp, eL : Exp);
+
+
+
+// ----------------------------------------------------------------------
+//   Ratio, Polynomial, Monomial, BaseMonomial
+// ----------------------------------------------------------------------
+
+BaseMonomial ::= Int, Var, Neg, Pow;
+Monomial(items : [BaseMonomial]);
+Polynomial(monomials : [Monomial]);
+Ratio(pR : Polynomial, pL : Polynomial);
+
+
+
+// ----------------------------------------------------------------------
+//   Tokens
+// ----------------------------------------------------------------------
+
+Token ::= TokenErr, TokenInt, TokenVar, TokenOp;
+TokenErr(msg : string);
+TokenInt(s : string);
+TokenVar(v : string);
+
+TokenOp ::= TokenDummyOp, TokenUnaryOp, TokenBinaryOp;
+
+TokenDummyOp ::= TokenPass, TokenParenthesis;
+TokenPass();
+
+TokenParenthesis ::= TokenOpeningParenthesis, TokenClosingParenthesis;
+TokenOpeningParenthesis();
+TokenClosingParenthesis();
+
+TokenUnaryOp ::= TokenNeg, TokenLn;
+TokenNeg();
+TokenLn();
+
+TokenBinaryOp ::= TokenAdd, TokenSub, TokenMul, TokenDiv, TokenPow;
+TokenAdd();
+TokenSub();
+TokenMul();
+TokenDiv();
+TokenPow();
+
+
+
+// ----------------------------------------------------------------------
+//   Grammars for parsers
+// ----------------------------------------------------------------------
+
+Postfix(head : Token, tail : [Token]);
+Infix(tokens : [Token]);
+
+postfixTokenizerGr = "
+    exp = ws* operand:o token*:ts ws* { Postfix(:o, :ts) };
+
+    token = ws+ (operand | operator):t { :t };
+
+    operator = (unaryOp | binaryOp):o { :o };
+
+    binaryOp = (addOp | subOp | mulOp | divOp | powOp):o { :o };
+    addOp = '+'$op { TokenAdd() };
+    subOp = '-'$op { TokenSub() };
+    mulOp = '*'$op { TokenMul() };
+    divOp = '/'$op { TokenDiv() };
+    powOp = '^'$op { TokenPow() };
+
+    unaryOp = (negOp | lnOp):o { :o };
+    negOp = '~'$op { TokenNeg() };
+    lnOp = '#Ln'$op { TokenLn() };
+
+    operand = (int | variable):o { :o };
+
+    variable = (letter+ (digit | letter)*)$v { TokenVar($v) };
+    int = digit+$i { TokenInt($i) };
+
+    letter = ('A'-'Z') | ('a'-'z') | '_';
+    digit = '0'-'9';
+    ws = (' ' | '\t');
+";
+
+infixTokenizerGr = "
+    exp = ws* token*:ts ws* { Infix(:ts) };
+
+    token = ws* (int | variable | operator | parenthesis):t ws* { :t };
+
+    parenthesis = (closingParenthesis | openingParenthesis):p { :p };
+    openingParenthesis = '('$p { TokenOpeningParenthesis() };
+    closingParenthesis = ')'$p { TokenClosingParenthesis() };
+
+    operator = (unaryOp | binaryOp):o { :o };
+
+    binaryOp = (addOp | subOp | mulOp | divOp | powOp):o { :o };
+    addOp = '+'$op { TokenAdd() };
+    subOp = '-'$op { TokenSub() };
+    mulOp = '*'$op { TokenMul() };
+    divOp = '/'$op { TokenDiv() };
+    powOp = '^'$op { TokenPow() };
+
+    unaryOp = (negOp | lnOp):o { :o };
+    negOp = '~'$op { TokenNeg() };
+    lnOp = '#Ln'$op { TokenLn() };
+
+    variable = (letter+ (digit | letter)*)$v { TokenVar($v) };
+    int = digit+$i { TokenInt($i) };
+
+    letter = ('A'-'Z') | ('a'-'z') | '_';
+    digit = '0'-'9';
+    ws = (' ' | '\t');
+";
+
+compiledPostfixTokenizerGr = compilePegGrammar(postfixTokenizerGr);
+compiledInfixTokenizerGr = compilePegGrammar(infixTokenizerGr);
+
+
+
+// ----------------------------------------------------------------------
+//   Parsesrs
+// ----------------------------------------------------------------------
+
+parsePostfixStr(exprStr : string) -> Postfix {
+    parsic(compiledPostfixTokenizerGr, exprStr, defaultPegActions);
+}
+
+parseInfixStr(exprStr : string) -> Infix {
+    parsic(compiledInfixTokenizerGr, exprStr, defaultPegActions);
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Utils for checks without switch-statements
+// ----------------------------------------------------------------------
+
+// extracts subexpression from UnaryOp
+sE(e : Exp) -> Exp { 
+    switch(e : Exp) { 
+        Neg(eN) : eN;
+        Ln(eL) : eL; 
+        default : Pass(); 
+    }
+}
+
+// extracts integer value i from struct Int(i) or Neg(Int(i))
+sI(intAsExp : Exp) -> int {
+    if (isNegConst(intAsExp)) {
+        sI(sE(intAsExp));
+    } else switch (intAsExp : Exp) {
+        Int(i) : i;
+        default : 0;
+    }
+}
+
+// extracts variable name v from struct Var(v) or Neg(Var(v)))
+sV(e : Exp) -> string {
+    if (isNeg(e) && isVar(sE(e))) {
+        sV(sE(e));
+    } else switch(e : Exp) { 
+        Var(v) : v;
+        default : ""; 
+    }
+}
+
+// extracts left subexpression from BinaryOp
+sL(e : Exp) -> Exp { 
+    switch(e : Exp) {
+        Add(eR, eL) : eL;
+        Sub(eR, eL) : eL;
+        Mul(eR, eL) : eL;
+        Div(eR, eL) : eL;
+        Pow(eR, eL) : eL;
+        default : Pass(); 
+    }
+}
+
+// extracts right subexpression from BinaryOp
+sR(e : Exp) -> Exp {
+    switch(e : Exp) {
+        Add(eR, eL) : eR;
+        Sub(eR, eL) : eR;
+        Mul(eR, eL) : eR;
+        Div(eR, eL) : eR;
+        Pow(eR, eL) : eR;
+        default : Pass(); 
+    }
+}
+
+isNeg(e : Exp) -> bool {
+    switch (e : Exp) {
+        Neg(eN) : true; 
+        default : false;
+    }
+}
+
+isPosConst(e : Exp) -> bool {
+    switch (e : Exp) {
+        Int(i) : (i > 0);
+        default : false;
+    }
+}
+
+isNegConst(e : Exp) -> bool {
+    isNeg(e) && isPosConst(sE(e));
+}
+
+isZero(e : Exp) -> bool {
+    e == Int(0);
+}
+
+isConst(e : Exp) -> bool {
+    isNegConst(e) || isZero(e) || isPosConst(e);
+}
+
+isPosVar(e : Exp) -> bool {
+    switch (e : Exp) {
+        Var(v) : true;
+        default : false;
+    } 
+}
+
+isNegVar(e : Exp) -> bool {
+    isNeg(e) && isPosVar(sE(e));
+}
+
+isVar(e : Exp) -> bool {
+    isPosVar(e) || isNegVar(e); 
+}
+
+isLn(e : Exp) -> bool {
+    switch (e : Exp) {
+        Ln(eL) : true;
+        default : false;
+    }
+}
+
+isAdd(e : Exp) -> bool {
+    switch (e : Exp) {
+        Add(eR, eL) : true;
+        default : false;
+    }
+}
+
+isSub(e : Exp) -> bool {
+    switch (e : Exp) { 
+        Sub(eR, eL) : true;
+        default : false;
+    } 
+}
+
+isMul(e : Exp) -> bool {
+    switch (e : Exp) {
+        Mul(eR, eL) : true;
+        default : false;
+    }
+}
+
+isDiv(e : Exp) -> bool {
+    switch (e : Exp) {
+        Div(eR, eL) : true;
+        default : false;
+    }
+}
+
+isPow(e : Exp) -> bool {
+    switch (e : Exp) {
+        Pow(eR, eL) : true;
+        default : false;
+    }
+}
+
+isUnaryOp(e : Exp) -> bool {
+    isNeg(e) || isLn(e);
+}
+
+isBinaryOp(e : Exp) -> bool {
+    isAdd(e) || isSub(e) || isMul(e) || isDiv(e) || isPow(e);
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Useful utils
+// ----------------------------------------------------------------------
+
+modInt(eL : Exp, eR : Exp) -> int {
+    mod(sI(eL), sI(eR));
+}
+
+popExp(dlist : DList<Exp>) -> Exp {
+    either(popDList(dlist), Err("Stack is empty"));
+}
+
+pushExp(dlist : DList<Exp>, val : Exp) -> DLink<Exp> {
+    pushDList(dlist, val);
+}
+
+getTokenOpPriority(operator : TokenOp) -> int {
+    switch (operator : TokenOp) {
+        TokenOpeningParenthesis() : 0;
+        TokenClosingParenthesis() : 0;
+        TokenNeg() : 10;
+        TokenLn() : 10;
+        TokenAdd() : 1;
+        TokenSub() : 1;
+        TokenMul() : 2;
+        TokenDiv() : 2;
+        TokenPow() : 3;
+        default: -1;
+    }
+}
+
+processTokenOp(op : TokenOp, s : DList<TokenOp>, o : DList<Token>) -> TokenOp {
+    if (isEmptyDList(s) == true) {
+        pushDList(s, op);
+        op;
+    } else {
+        stackItem = either(popDList(s), TokenPass());
+        switch (stackItem : TokenOp) {
+            TokenPass() : stackItem;
+            TokenClosingParenthesis() : stackItem;
+            default : {
+                stackItemPriority = getTokenOpPriority(stackItem);
+                operatorPriority = getTokenOpPriority(op);
+                if (stackItemPriority >= operatorPriority) {
+                    pushDList(o, stackItem);
+                    processTokenOp(op, s, o);
+                } else {
+                    pushDList(s, stackItem);
+                    pushDList(s, op);
+                    op;
+                }
+            }
+        }
+    }
+}
+
+processClosingParenthesis(s : DList<TokenOp>, o : DList<Token>) -> bool {
+    if (isEmptyDList(s) == true) {
+        pushDList(o, TokenErr("There is no opening parenthesis"));
+        false;
+    } else {
+        stackItem = either(popDList(s), TokenPass());
+        switch (stackItem : TokenOp) {
+            TokenPass() : false;
+            TokenClosingParenthesis() : false;
+            TokenOpeningParenthesis() : true;
+            default : {
+                pushDList(o, stackItem);
+                processClosingParenthesis(s, o) && true;
+            }
+        }
+    }
+}
+
+getPolynomialVars(p : Polynomial) -> [string] {
+    vars = fold(p.monomials, makeSet(), \acc,x -> {
+        fold(x.items, acc, \innerAcc,innerX -> {
+            if (isVar(innerX)) {
+                insertSet(innerAcc, sV(innerX));
+            } else if (isPow(innerX) && isVar(sL(innerX))){
+                insertSet(innerAcc, sV(sL(innerX)));
+            } else {
+                innerAcc;
+            }
+        });
+    });
+    set2array(vars);
+}
+
+getMaxDegrees(p : Polynomial, vars : [string]) -> Tree<string, int> {
+    fold(p.monomials, makeTree(), \acc,x -> {
+        fold(x.items, acc, \inAcc,inX -> {
+            if (isVar(inX)) {
+                maxDegree = lookupTreeDef(inAcc, sV(inX), 0);
+                if (1 > maxDegree) {
+                    setTree(inAcc, sV(inX), 1);
+                } else {
+                    inAcc;
+                }
+            } else if (isPow(inX) && isVar(sL(inX)) && isConst(sR(inX))) {
+                maxDegree = lookupTreeDef(inAcc, sV(sL(inX)), 0);
+                if (sI(sR(inX)) > maxDegree) {
+                    setTree(inAcc, sV(sL(inX)), sI(sR(inX)));
+                } else {
+                    inAcc;
+                }
+            } else {
+                inAcc;
+            }
+        });
+    });
+}
+
+getMinDegrees(p : Polynomial, vars : [string]) -> Tree<string, int> {
+    t : Tree<string, int> = getMaxDegrees(p, vars);
+    fold(p.monomials, t, \acc,x -> {
+        if (length(x.items) == 1 && isConst(x.items[0]) || length(x.items) == 0) {
+            fold(getTreeKeys(acc), acc, \inAcc,key -> {
+                setTree(inAcc, key, 0);
+            });
+        } else {
+            fold(x.items, acc, \inAcc,inX -> {
+                if (isVar(inX)) {
+                    minDegree = lookupTreeDef(inAcc, sV(inX), 0);
+                    newMinDegree = if (1 < minDegree) { 
+                        1; 
+                    } else { 
+                        minDegree; 
+                    }
+                    setTree(inAcc, sV(inX), newMinDegree);
+                } else if (isPow(inX) && isVar(sL(inX)) && isConst(sR(inX))) {
+                    minDegree = lookupTreeDef(inAcc, sV(sL(inX)), 0);
+                    newMinDegree = if (sI(sR(inX)) < minDegree) { 
+                        sI(sR(inX)); 
+                    } else {
+                        minDegree; 
+                    }
+                    setTree(inAcc, sV(sL(inX)), newMinDegree);
+                } else {
+                    inAcc;
+                }
+            });
+        }
+    });
+}
+
+getMaxConst(p : Polynomial) -> int {
+    fold(p.monomials, 0, \acc,x -> {
+        if (length(x.items) >= 1) {
+            c = if (isConst(x.items[0])) { sI(x.items[0]); } else { 1; }
+            if (iabs(c) > acc) {
+                iabs(c);
+            } else {
+                acc;
+            }
+        } else {
+            acc;
+        }
+    });
+}
+
+getMinConst(p : Polynomial) -> int {
+    fold(p.monomials, getMaxConst(p), \acc,x -> {
+        if (length(x.items) >= 1) {
+            c = if (isConst(x.items[0])) { sI(x.items[0]); } else { 1; }
+            if (iabs(c) < acc) {
+                iabs(c);
+            } else {
+                acc;
+            }
+        } else {
+            acc;
+        }
+    });
+}
+
+getMinMonomial(p : Polynomial) -> Monomial {
+    vars : [string] = getPolynomialVars(p);
+    degrees : Tree<string, int> = getMinDegrees(p, vars);
+    baseMonomials = fold(getTreeKeys(degrees), [], \acc,x -> {
+        item = Pow(simplifyInt(lookupTreeDef(degrees, x, 0)), Var(x));
+        concat(acc, [item]);
+    });
+    Monomial(sortBaseMonomials(baseMonomials));
+}
+
+negativateDegrees(m : Monomial) -> Monomial {
+    baseMonomials = fold(m.items, [], \acc,x -> {
+        if (isVar(x)) {
+            concat(acc, [Pow(Neg(Int(1)), Var(sV(x)))]);
+        } else if (isPow(x) && isConst(sR(x))) {
+            concat(acc, [Pow(Neg(sR(x)), sL(x))]);
+        } else {
+            concat(acc, [x]);
+        }
+    });
+    Monomial(sortBaseMonomials(baseMonomials));
+}
+
+joinMonomials(m1 : Monomial, m2 : Monomial) -> Monomial {
+    Monomial(sortBaseMonomials(concat(m1.items, m2.items)));
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Comparators
+// ----------------------------------------------------------------------
+
+cmpVars(v1 : string, v2: string) -> int {
+    // variables are compared lexicographically
+    if (v1 < v2) { -1; } 
+    else if (v1 == v2) { 0; } 
+    else { 1;}
+}
+
+cmpBaseMonomials(i1 : BaseMonomial, i2 : BaseMonomial) -> int {
+    if (isConst(i1) && isConst(i2)) { 0; }
+    else if (isConst(i1) && !isConst(i2)) { -1; }
+    else if (isConst(i2) && !isConst(i1)) { 1; }
+    else if (isVar(i1) && isVar(i2)) { cmpVars(sV(i1), sV(i2)); } 
+    else if (isPow(i1)) {
+        eL1 = astToBaseMonomial(sL(i1));
+        cmpBaseMonomials(eL1, i2);
+    } else if (isPow(i2)) {
+        eL2 = astToBaseMonomial(sL(i2));
+        cmpBaseMonomials(i1, eL2);
+    } else if (isNeg(i1)) {
+        eE1 = astToBaseMonomial(sE(i1));
+        cmpBaseMonomials(eE1, i2);
+    } else if (isNeg(i2)) {
+        eE2 = astToBaseMonomial(sE(i2));
+        cmpBaseMonomials(i1, eE2);
+    } else 0;
+}
+
+cmpNonConstMonomialParts(i1 : BaseMonomial, i2 : BaseMonomial) -> int {
+    if (isVar(i1) && isVar(i2)) { cmpVars(sV(i1), sV(i2)); }
+    else if (isVar(i1) && isPow(i2)) {
+        comparedVars = cmpVars(sV(i1), sV(sL(i2)));
+        comparedConsts = 1 - sI(sR(i2));
+        if (comparedVars != 0) {
+            comparedVars;
+        } else {
+            comparedConsts;
+        }
+    } else if (isPow(i1) && isVar(i2)) {
+        comparedVars = cmpVars(sV(sL(i1)), sV(i2));
+        comparedConsts = sI(sR(i1)) - 1;
+        if (comparedVars != 0) {
+            comparedVars;
+        } else {
+            comparedConsts;
+        }
+    } else if (isPow(i1) && isPow(i2)) {
+        comparedVars = cmpVars(sV(sL(i1)), sV(sL(i2)));
+        comparedConsts = sI(sR(i1)) - sI(sR(i2));
+        if (comparedVars != 0) {
+            comparedVars;
+        } else {
+            comparedConsts;
+        }
+    } else 0;
+}
+
+cmpMonomials(i1 : Monomial, i2 : Monomial) -> int {
+    bms1 = sortBaseMonomials(i1.items);
+    bms2 = sortBaseMonomials(i2.items);
+    if (length(bms1) == 0 || length(bms2) == 0) {
+        0;
+    } else {
+        const1 = if (isConst(bms1[0])) { bms1[0]; } else { Int(1); };
+        const2 = if (isConst(bms2[0])) { bms2[0]; } else { Int(1); };
+        nonConsts1 = if (isConst(bms1[0])) { tail(bms1); } else { bms1; };
+        nonConsts2 = if (isConst(bms2[0])) { tail(bms2); } else { bms2; };
+        if (length(nonConsts1) > length(nonConsts2)) {
+            1;
+        } else if (length(nonConsts1) < length(nonConsts2)) {
+            -1;
+        } else {
+            res = foldri(nonConsts1, 0, \i,acc,x -> {
+                compared = cmpNonConstMonomialParts(x, nonConsts2[i]);
+                if (compared != 0 && acc == 0) {
+                    compared;
+                } else {
+                    acc;
+                }
+            });
+            res;
+        }
+    }
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Sorters
+// ----------------------------------------------------------------------
+
+sortBaseMonomials(items : [BaseMonomial]) -> [BaseMonomial] {
+    mergeSort(items, cmpBaseMonomials);
+}
+
+sortAndGroupBaseMonomials(items : [BaseMonomial]) -> [[BaseMonomial]] {
+    sortGroupBy(items, cmpBaseMonomials);
+}
+
+sortMonomials(items : [Monomial]) -> [Monomial] {
+    mergeSort(items, cmpMonomials);
+}
+
+sortAndGroupMonomials(items : [Monomial]) -> [[Monomial]] {
+    sortGroupBy(items, cmpMonomials);
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Verificators
+// ----------------------------------------------------------------------
+
+verifyAst(ast : Exp) -> bool {
+    if (isBinaryOp(ast)) { 
+        verifyAst(sR(ast)) && verifyAst(sL(ast));
+    } else if (isUnaryOp(ast)) { 
+        verifyAst(sE(ast)); 
+    } else if (isConst(ast) || isVar(ast)) { 
+        true; 
+    } else {
+        false; 
+    }
+}
+
+checkAstCalculability(verifiedAst : Exp) -> bool {
+    switch (verifiedAst : Exp) {
+        Add(eR, eL) : checkAstCalculability(eR) && checkAstCalculability(eL);
+        Sub(eR, eL) : checkAstCalculability(eR) && checkAstCalculability(eL);
+        Mul(eR, eL) : checkAstCalculability(eR) && checkAstCalculability(eL);
+        Div(eR, eL) : checkAstCalculability(eR) && checkAstCalculability(eL);
+        Pow(eR, eL) : checkAstCalculability(eR) && checkAstCalculability(eL);
+        Neg(e) : checkAstCalculability(e);
+        Ln(e) : checkAstCalculability(e);
+        Int(i) : true;
+        default : false;
+    }
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Calculators
+// ----------------------------------------------------------------------
+
+useVarsInAst(verifiedAst : Exp, vars : Tree<string, int>) -> Exp {
+    switch (verifiedAst : Exp) {
+        Var(v) : { 
+            value = lookupTree(vars, v);
+            if (value == None()) {
+                Var(v);
+            } else {
+                simplifyInt(either(value, 0));
+            }
+        };
+        Add(eR, eL) : Add(useVarsInAst(eR, vars), useVarsInAst(eL, vars));
+        Sub(eR, eL) : Sub(useVarsInAst(eR, vars), useVarsInAst(eL, vars));
+        Mul(eR, eL) : Mul(useVarsInAst(eR, vars), useVarsInAst(eL, vars));
+        Div(eR, eL) : Div(useVarsInAst(eR, vars), useVarsInAst(eL, vars));
+        Pow(eR, eL) : Pow(useVarsInAst(eR, vars), useVarsInAst(eL, vars));
+        Neg(e) : Neg(useVarsInAst(e, vars));
+        Ln(e) : Ln(useVarsInAst(e, vars));
+        Int(i) : Int(i);
+        default : verifiedAst;
+    }
+}
+
+calculateAst(calculatableAst : Exp) -> int {
+    switch (calculatableAst : Exp) {
+        Add(eR, eL) : calculateAst(eL) + calculateAst(eR);
+        Sub(eR, eL) : calculateAst(eL) - calculateAst(eR);
+        Mul(eR, eL) : calculateAst(eL) * calculateAst(eR);
+        Div(eR, eL) : calculateAst(eL) / calculateAst(eR);
+        Pow(eR, eL) : pow(calculateAst(eL), calculateAst(eR));
+        Neg(e) : (-1) * calculateAst(e);
+        Ln(e) : floor(log(i2d(calculateAst(e))));
+        Int(i) : i;
+        default : 0;
+    }
+}
+
+calculateAstWithVars(verifiedAst : Exp, vars : Tree<string, int>) -> Exp {
+    ast = useVarsInAst(verifiedAst, vars);
+    if (checkAstCalculability(ast) == true) {
+        Int(calculateAst(ast));
+    } else {
+        ast;
+    }
+}
+
+divMonomialOnConst(m : Monomial, c : int) -> Monomial {
+    if (c <= 1 || length(m.items) == 0 || !isConst(m.items[0])) {
+        m;
+    } else {
+        Monomial(concat([astToBaseMonomial(simplifyInt(sI(m.items[0]) / c))], tail(m.items)));
+    }
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Simplifiers
+// ----------------------------------------------------------------------
+
+simplifyInt(i : int) -> Exp {
+    if (i < 0) { Neg(Int(-i)); } else { Int(i); }
+}
+
+simplifyNeg(e : Exp) -> Exp {
+    ast = Neg(simplifyAst(e));
+    switch (ast.e : Exp) {
+        Int(i) : if (i == 0) { Int(0); } else { ast; }
+        Neg(eE) : eE;
+        default : ast;
+    }
+}
+
+simplifyAdd(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Add(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eR == Neg(eL) || eL == Neg(eR)) { Int(0); }
+    else if (eR == Int(0)) { eL; }
+    else if (eL == Int(0)) { eR; }
+    else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Neg(Add(sE(eR), sE(eL)))); }
+    else if (isConst(eL)) { simplifyAst(Add(eL, eR)); }
+    else if (eL == eR) { simplifyAst(Mul(Int(2), eL)); }
+    else if (isAdd(eR) && isMul(sL(eR)) && isConst(sL(sL(eR))) && sR(sL(eR)) == eL) {
+        simplifyAst(Add(Add(sL(eR), eL), sR(eR)));
+    } else if (isAdd(eR) && isMul(sL(eR)) && isMul(eL) && isConst(sL(sL(eR))) && isConst(sL(eL)) && sR(sL(eR)) == sR(eL)) {
+        simplifyAst(Add(Add(sL(eR), eL), sR(eR)));
+    } else if (isAdd(eR) && isMul(sL(eR)) && isNeg(eL) && isConst(sL(sL(eR))) && sE(eL) == sR(sL(eR))) {
+        simplifyAst(Add(Mul(sE(eL), simplifyInt(sI(sL(sL(eR))) - 1)), sR(eR)));
+    } else if (isMul(eR) && isConst(sL(eR)) && sR(eR) == eL) { simplifyAst(Mul(Add(sL(eR), Int(1)), eL)); }
+    else if (isMul(eL) && isConst(sL(eL)) && sR(eL) == eR) { simplifyAst(Mul(Add(sL(eL), Int(1)), eR)); }
+    else if (isMul(eL) && isMul(eR) && isConst(sL(eL)) && isConst(sL(eR)) && sR(eL) == sR(eR)) { simplifyAst(Mul(Add(sL(eL), sL(eR)), sR(eR))); }
+    else ast;
+}
+
+simplifySub(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Sub(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eR == Int(0)) { eL; } 
+    else if (eL == Int(0)) { simplifyAst(Neg(eR)); }
+    else if (eL == eR) { Int(0); }
+    else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Neg(Sub(sE(eR), sE(eL)))); }
+    else if (isNeg(eL)) { simplifyAst(Neg(Add(eR, sE(eL)))); }
+    else if (isNeg(eR)) { simplifyAst(Add(sE(eR), eL)); }
+    else if (isConst(eL)) { simplifyAst(Neg(Sub(eL, eR))); }
+    else ast;
+}
+
+simplifyDiv(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Div(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eL == Int(0)) { Int(0); }
+    else if (eR == Int(1)) { eL; } 
+    else if (eL == eR && eR != Int(0)) { Int(1); }
+    else if (isConst(eL) && isConst(eR) && modInt(eL, eR) == 0) { simplifyInt(calculateAst(ast)); }
+    else if (eL == Int(1) && isDiv(eR)) { simplifyAst(Div(sL(eR), sR(eR))); }
+    else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Div(sE(eR), sE(eL))); }
+    else if (isNeg(eL)) { simplifyAst(Neg(Div(eR, sE(eL)))); }
+    else if (isNeg(eR)) { simplifyAst(Neg(Div(sE(eR), eL))); }
+    else if (isPow(eL) && isPow(eR) && sL(eL) == sL(eR)) { simplifyAst(Pow(Sub(sR(eR), sR(eL)), sL(eL))); }
+    else if (isPow(eL) && sL(eL) == eR) { simplifyAst(Pow(Sub(Int(1), sR(eL)), eR)); }
+    else if (isPow(eR) && eL == sL(eR)) { simplifyAst(Pow(Sub(sR(eR), Int(1)), eL)); }
+    else ast;
+}
+
+simplifyMul(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Mul(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eR == Int(0) || eL == Int(0)) { Int(0); }
+    else if (eR == Int(1)) { eL; } 
+    else if (eL == Int(1)) { eR; }
+    else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else if (eR == Div(eL, Int(1))) { Int(1); }
+    else if (eL == Div(eR, Int(1))) { Int(1); }
+    else if (isNeg(eL) && isNeg(eR)) { simplifyAst(Mul(sE(eR), sE(eL))); }
+    else if (isNeg(eL)) { simplifyAst(Neg(Mul(eR, sE(eL)))); }
+    else if (isNeg(eR)) { simplifyAst(Neg(Mul(sE(eR), eL))); }
+    else if (eL == eR) { simplifyAst(Pow(Int(2), eL)); } 
+    else if (isConst(eR)) { simplifyAst(Mul(eL, eR)); }
+    else if (isMul(eL) && isConst(sL(eL)) && sR(eL) == eR) { simplifyAst(Mul(Mul(eR, sR(eL)), sL(eL))); }
+    else if (isMul(eR) && isConst(sL(eR)) && sR(eR) == eL) { simplifyAst(Mul(Mul(sR(eR), eL), sL(eR))); }
+    else if (isMul(eL) && isMul(eR) && isConst(sL(eL)) && isConst(sL(eR)) && sR(eL) == sR(eR)) { simplifyAst(Mul(Mul(sR(eR), sR(eL)), Mul(sL(eR), sL(eL)))); }
+    else if (isPow(eL) && isPow(eR) && sL(eL) == sL(eR)) { simplifyAst(Pow(Add(sR(eR), sR(eL)), sL(eL))); }
+    else if (isPow(eL) && sL(eL) == eR) { simplifyAst(Pow(Add(Int(1), sR(eL)), eR)); }
+    else if (isPow(eR) && eL == sL(eR)) { simplifyAst(Pow(Add(sR(eR), Int(1)), eL)); }
+    else ast;
+}
+
+simplifyPow(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Pow(simplifyAst(eRight), simplifyAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (eR == Int(0)) { Int(1); }
+    else if (eR == Int(1)) { eL; }
+    else if (isConst(eL) && isConst(eR)) { simplifyInt(calculateAst(ast)); }
+    else if (isNeg(eL) && isConst(eR) && modInt(eR, Int(2)) == 0) { simplifyAst(Pow(eR, sE(eL))); }
+    else if (isNeg(eL) && isConst(eR) && modInt(eR, Int(2)) != 0) { simplifyAst(Neg(Pow(eR, sE(eL)))); }
+    else if (isPow(eL)) { simplifyAst(Pow(Mul(eR, sR(eL)), sL(eL))); }
+    else ast;
+}
+
+simplifyAst(verifiedAst : Exp) -> Exp {
+    switch (verifiedAst : Exp) {
+        Add(eR, eL) : simplifyAdd(eR, eL);
+        Sub(eR, eL) : simplifySub(eR, eL);
+        Mul(eR, eL) : simplifyMul(eR, eL);
+        Div(eR, eL) : simplifyDiv(eR, eL);
+        Neg(e) : simplifyNeg(e);
+        Pow(eR, eL) : simplifyPow(eR, eL);
+        Int(i) : simplifyInt(i);
+        default : verifiedAst;
+    }
+}
+
+simplifyBaseMonomial(bm : BaseMonomial) -> BaseMonomial {
+    astToBaseMonomial(simplifyAst(bm));
+}
+
+simplifyMonomial(m : Monomial) -> Monomial {
+    simplifiedBaseMonomials = map(m.items, \i -> simplifyBaseMonomial(i));
+    groupedBaseMonomials = sortAndGroupBaseMonomials(simplifiedBaseMonomials);
+    
+    // println(groupedBaseMonomials);
+
+    asts = map(groupedBaseMonomials, \i -> monomialToAst(Monomial(i)));
+
+    simplifiedAsts = map(asts, \i -> simplifyAst(i));
+    bms = sortAndGroupBaseMonomials(fold(simplifiedAsts, [], \acc,x -> {
+        concat(acc, astToBaseMonomials(x))
+    }));
+    reGroupedAsts = map(bms, \i -> monomialToAst(Monomial(i)));
+    reSimplifiedAsts = map(reGroupedAsts, \i -> simplifyAst(i));
+    newBaseMonomials = fold(reSimplifiedAsts, [], \acc,x -> { 
+        concat(acc, astToBaseMonomials(x))
+    });
+    newAst = monomialToAst(Monomial(newBaseMonomials));
+    astToMonomial(newAst);
+}
+
+simplifyPolynomial(p : Polynomial) -> Polynomial {
+    simplifiedMonomials = map(p.monomials, \i -> simplifyMonomial(i));
+    groupedMonomials = sortAndGroupMonomials(simplifiedMonomials);
+    // println(groupedMonomials);
+
+    asts = map(groupedMonomials, \i -> polynomialToAst(Polynomial(i)));
+    simplifiedAsts = map(asts, \i -> simplifyAst(i));
+    monomials = fold(simplifiedAsts, [], \acc,x -> {
+        concat(acc, astToMonomials(x))}
+    );
+
+    cleanedMonomials = map(monomials, \i -> simplifyMonomial(i));
+
+    // println(polynomialToAst(Polynomial(cleanedMonomials)));
+    simplifiedAst = simplifyAst(polynomialToAst(Polynomial(cleanedMonomials)));
+    badPolynom = astToPolynomial(simplifiedAst);
+    Polynomial(map(badPolynom.monomials, \i -> simplifyMonomial(i)));
+}
+
+simplifyRatio(r : Ratio) -> Ratio {
+    mL = getMinMonomial(r.pL);
+    mR = getMinMonomial(r.pR);
+    mM = negativateDegrees(getMinMonomial(Polynomial([mL, mR])));
+    mCL = getMinConst(r.pL);
+    mCR = getMinConst(r.pR);
+    mCM = gcd(mCL, mCR);
+
+    pL = simplifyPolynomial(Polynomial(fold(r.pL.monomials, [], \acc,x -> {
+        concat(acc, [joinMonomials(divMonomialOnConst(x, mCM), mM)]);
+    })));
+    pR = simplifyPolynomial(Polynomial(fold(r.pR.monomials, [], \acc,x -> {
+        concat(acc, [joinMonomials(divMonomialOnConst(x, mCM), mM)]);
+    })));
+    Ratio(pR, pL);
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Generalizers
+// ----------------------------------------------------------------------
+
+generalizeNeg(subExp : Exp) -> Div {
+    // ~(x / y) == (~x / y)
+    ast = Neg(generalizeAst(subExp));
+    x = sL(ast.e);
+    y = sR(ast.e);
+    Div(y, Neg(x));
+}
+
+generalizeAdd(eRight : Exp, eLeft : Exp) -> Div {
+    // (x / y) + (z / w) == (x * w + y * z) / (y * w)
+    ast = Add(generalizeAst(eRight), generalizeAst(eLeft));
+    x = sL(ast.eL);
+    y = sR(ast.eL);
+    z = sL(ast.eR);
+    w = sR(ast.eR);
+    Div(Mul(w, y), Add(Mul(z, y), Mul(w, x)));
+}
+
+generalizeSub(eRight : Exp, eLeft : Exp) -> Div {
+    // (x / y) - (z / w) = (x * w - y * z) / (y * w)
+    ast = Sub(generalizeAst(eRight), generalizeAst(eLeft));
+    x = sL(ast.eL);
+    y = sR(ast.eL);
+    z = sL(ast.eR);
+    w = sR(ast.eR);
+    Div(Mul(w, y), Sub(Mul(z, y), Mul(w, x)));
+}
+
+generalizeMul(eRight : Exp, eLeft : Exp) -> Div {
+    // (x / y) * (z / w) = (x * z) / (y * w)
+    ast = Mul(generalizeAst(eRight), generalizeAst(eLeft));
+    x = sL(ast.eL);
+    y = sR(ast.eL);
+    z = sL(ast.eR);
+    w = sR(ast.eR);
+    Div(Mul(w, y), Mul(z, x));
+}
+
+generalizeDiv(eRight : Exp, eLeft : Exp) -> Div {
+    // (x / y) / (z / w) = (x * w) / (y * z)
+    ast = Div(generalizeAst(eRight), generalizeAst(eLeft));
+    x = sL(ast.eL);
+    y = sR(ast.eL);
+    z = sL(ast.eR);
+    w = sR(ast.eR);
+    Div(Mul(z, y), Mul(w, x));
+}
+
+generalizeAst(verifiedAst : Exp) -> Div {
+    switch (verifiedAst : Exp) {
+        Add(eR, eL) : generalizeAdd(eR, eL);
+        Sub(eR, eL) : generalizeSub(eR, eL);
+        Mul(eR, eL) : generalizeMul(eR, eL);
+        Div(eR, eL) : generalizeDiv(eR, eL);
+        Neg(e) : generalizeNeg(e);
+        default : Div(Int(1), verifiedAst);
+    }
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Distributors
+// ----------------------------------------------------------------------
+
+newtonPolynomial(eL : Exp, eR : Exp, k : int) -> Exp {
+    if (k <= 0) {
+        Int(1);
+    } else {
+        Mul(newtonPolynomial(eL, eR, k - 1), Add(eR, eL));
+    }
+}
+
+distributeAdd(eRight : Exp, eLeft : Exp) -> Exp {
+    Add(distributeAst(eRight), distributeAst(eLeft));
+}
+
+distributeSub(eRight : Exp, eLeft : Exp) -> Exp {
+    Add(distributeAst(Neg(eRight)), distributeAst(eLeft));
+}
+
+distributeMul(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Mul(distributeAst(eRight), distributeAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    // (x + y) * z = x * z + y * z
+    // x * (y + z) = x * y + x * z
+    if (isAdd(eL)) {
+        distributeAst(Add(Mul(eR, sR(eL)), Mul(eR, sL(eL))));
+    } else if (isAdd(eR)) {
+        distributeAst(Add(Mul(sR(eR), eL), Mul(sL(eR), eL)));
+    } else ast;
+}
+
+distributePow(eRight : Exp, eLeft : Exp) -> Exp {
+    ast = Pow(distributeAst(eRight), distributeAst(eLeft));
+    eR = ast.eR;
+    eL = ast.eL;
+    if (isPosConst(eR) && isAdd(eL)) {
+        distributeAst(newtonPolynomial(sL(eL), sR(eL), sI(eR)));
+    } else if (isMul(eL)) {
+        distributeAst(Mul(Pow(eR, sR(eL)), Pow(eR, sL(eL))));
+    } else ast;
+}
+
+distributeNeg(subExp : Exp) -> Exp {
+    ast = Neg(distributeAst(subExp));
+    // ~(x + y) == ~x + ~y
+    // ~(x * y) == ~x * y
+    if (isAdd(ast.e)) {
+        distributeAst(Add(Neg(sR(ast.e)), Neg(sL(ast.e))));
+    } else if (isMul(ast.e)) {
+        distributeAst(Mul(sR(ast.e), Neg(sL(ast.e))));
+    } else ast;
+}
+
+distributeAst(nonDivAst : Exp) -> Exp {
+    switch (nonDivAst : Exp) {
+        Add(eRight, eLeft) : distributeAdd(eRight, eLeft);
+        Sub(eRight, eLeft) : distributeSub(eRight, eLeft);
+        Mul(eRight, eLeft) : distributeMul(eRight, eLeft);
+        Pow(eRight, eLeft) : distributePow(eRight, eLeft);
+        Neg(e) : distributeNeg(e);
+        default : nonDivAst;
+    }
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Differentiators
+// ----------------------------------------------------------------------
+
+diffAdd(eR : Exp, eL : Exp, var : string) -> Exp {
+    // (a + b)' == a' + b'
+    Add(diffAst(eR, var), diffAst(eL, var));
+}
+
+diffSub(eR : Exp, eL : Exp, var : string) -> Exp {
+    // (a - b)' == a' - b'
+    Sub(diffAst(eR, var), diffAst(eL, var));
+}
+
+diffMul(eR : Exp, eL : Exp, var : string) -> Exp {
+    // (a * b)' == b * a' + b' * a
+    Add(Mul(eL, diffAst(eR, var)), Mul(diffAst(eL, var), eR));
+}
+
+diffDiv(eR : Exp, eL : Exp, var : string) -> Exp {
+    // (a / b)' == (b * a' - b' * a) / (b ^ 2)
+    nominator = Sub(Mul(eL, diffAst(eR, var)), Mul(diffAst(eL, var), eR));
+    denominator = Pow(Int(2), eR);
+    Div(denominator, nominator);
+}
+
+diffPow(eR : Exp, eL : Exp, var : string) -> Exp {
+    switch (eR : Exp) {
+        // (f ^ n)' == n * (f ^ (n - 1)) * f'
+        Int(i) : Mul(diffAst(eL, var), Mul(Pow(simplifyInt(i - 1), eL), eR));
+        default : {
+            // (u ^ v)' == (u ^ v) * (v' * ln(u) + (v / u) * u')
+            leftTerm = Mul(Ln(eL), diffAst(eR, var));
+            rightTerm = Mul(diffAst(eL, var), Div(eL, eR));
+            Mul(Add(rightTerm, leftTerm), Pow(eR, eL));
+        }
+    }
+}
+
+diffNeg(e : Exp, var : string) -> Exp {
+    Neg(diffAst(e, var));
+}
+
+diffLn(e : Exp, var : string) -> Exp {
+    Mul(diffAst(e, var), Div(e, Int(1)));
+}
+
+diffAst(verifiedAst : Exp, var : string) -> Exp {
+    switch (verifiedAst : Exp) {
+        Add(eR, eL) : diffAdd(eR, eL, var);
+        Sub(eR, eL) : diffSub(eR, eL, var);
+        Mul(eR, eL) : diffMul(eR, eL, var);
+        Div(eR, eL) : diffDiv(eR, eL, var);
+        Pow(eR, eL) : diffPow(eR, eL, var);
+        Neg(e) : diffNeg(e, var);
+        Ln(e) : diffLn(e, var);
+        Var(v) : if (v == var) { Int(1); } else { Int(0); };
+        Int(i) : Int(0);
+        default : Err("Not realised");
+    }
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Type converters
+// ----------------------------------------------------------------------
+
+tokenToTokenOp(token : Token) -> TokenOp {
+    switch (token : Token) {
+        TokenOpeningParenthesis() : token;
+        TokenClosingParenthesis() : token;
+        TokenAdd() : token;
+        TokenSub() : token;
+        TokenMul() : token;
+        TokenDiv() : token;
+        TokenPow() : token;
+        TokenNeg() : token;
+        TokenLn() : token;
+        default : TokenPass();
+    }
+}
+
+postfixToTokenArray(postfix : Postfix) -> [Token] {
+    concat([postfix.head], postfix.tail);
+}
+
+infixToTokenArray(infix : Infix) -> [Token] {
+    infix.tokens;
+}
+
+infixToPostfix(infix : Infix) -> Postfix {
+    stack : DList<TokenOp> = makeDList();
+
+    infixTokens : [Token] = infixToTokenArray(infix);
+    postfixTokens : DList<Token> = fold(infixTokens, makeDList(), \out,x -> {
+        switch (x : Token) {
+            TokenInt(i) : { pushDList(out, x); x; }
+            TokenVar(v) : { pushDList(out, x); x; }
+            TokenErr(msg) : x;
+            TokenPass() : x;
+            TokenOpeningParenthesis() : { pushDList(stack, x); x; }
+            TokenClosingParenthesis() : {
+                processClosingParenthesis(stack, out); x;
+            }
+            default : { processTokenOp(tokenToTokenOp(x), stack, out); x; }
+        }
+        out;
+    });
+
+    completedOut : DList<Token> = rfoldDList(stack, postfixTokens, \acc,x -> {
+        switch (x : TokenOp) {
+            TokenOpeningParenthesis() : {
+                pushDList(acc, TokenErr("The parenthesis was missed"));
+            }
+            default : pushDList(acc, x);
+        }
+        acc;
+    });
+
+    outAsArray = dList2array(completedOut);
+    outLength = length(outAsArray);
+    if (outLength == 0) {
+        Postfix(TokenPass(), []);
+    } else if (outLength == 1) {
+        Postfix(outAsArray[0], []);
+    } else {
+        Postfix(outAsArray[0], tail(outAsArray));
+    }
+}
+
+postfixToAst(postfix : Postfix) -> Exp {
+    tokens : [Token] = postfixToTokenArray(postfix);
+    stack : DList<Exp> = fold(tokens, makeDList(), \acc,x -> {
+        switch (x : Token) {
+            TokenAdd() : pushExp(acc, Add(popExp(acc), popExp(acc)));
+            TokenSub() : pushExp(acc, Sub(popExp(acc), popExp(acc)));
+            TokenMul() : pushExp(acc, Mul(popExp(acc), popExp(acc)));
+            TokenDiv() : pushExp(acc, Div(popExp(acc), popExp(acc)));
+            TokenPow() : pushExp(acc, Pow(popExp(acc), popExp(acc)));
+            TokenNeg() : pushExp(acc, Neg(popExp(acc)));
+            TokenLn() : pushExp(acc, Ln(popExp(acc)));
+            TokenPass() : pushExp(acc, popExp(acc));
+            TokenVar(v) : pushExp(acc, Var(v));
+            TokenInt(i) : pushExp(acc, Int(s2i(i)));
+            TokenErr(msg) : pushExp(acc, Err(msg));
+            default : pushExp(acc, Err("Unexpected token"));
+        }
+        acc;
+    });
+    popExp(stack);
+}
+
+infixToAst(infix : Infix) -> Exp {
+    postfixToAst(infixToPostfix(infix));
+}
+
+strToAst(exprStr : string, parseMode : string) -> Exp {
+    ast = if (parseMode == "infix") {
+        infixToAst(parseInfixStr(exprStr));
+    } else if (parseMode == "postfix") {
+        postfixToAst(parsePostfixStr(exprStr));
+    } else {
+        Err("Incorrect parse mode");
+    };
+    if (verifyAst(ast)) {
+        ast;
+    } else {
+        Err("Couldn't create correct AST");
+    }
+}
+
+astToPostfixStr(verifiedAst : Exp) -> string {
+    switch(verifiedAst : Exp) {
+        Add(eR, eL) : astToPostfixStr(eL) + astToPostfixStr(eR) + " +";
+        Sub(eR, eL) : astToPostfixStr(eL) + astToPostfixStr(eR) + " -";
+        Mul(eR, eL) : astToPostfixStr(eL) + astToPostfixStr(eR) + " *";
+        Div(eR, eL) : astToPostfixStr(eL) + astToPostfixStr(eR) + " /";
+        Pow(eR, eL) : astToPostfixStr(eL) + astToPostfixStr(eR) + " ^";
+        Neg(e) : astToPostfixStr(e) + " ~";
+        Ln(e) : astToPostfixStr(e) + " #Ln";
+        Int(i) : " " + i2s(i);
+        Var(v) : " " + v;
+        default : "";
+    }
+}
+
+astToInfixStr(verifiedAst : Exp) -> string {
+    switch (verifiedAst : Exp) {
+        Add(eR, eL) : "(" + astToInfixStr(eL) + "+" + astToInfixStr(eR) + ")";
+        Sub(eR, eL) : "(" + astToInfixStr(eL) + "-" + astToInfixStr(eR) + ")";
+        Mul(eR, eL) : "(" + astToInfixStr(eL) + "*" + astToInfixStr(eR) + ")";
+        Div(eR, eL) : "(" + astToInfixStr(eL) + "/" + astToInfixStr(eR) + ")";
+        Pow(eR, eL) : "(" + astToInfixStr(eL) + "^" + astToInfixStr(eR) + ")";
+        Neg(e) : "~(" + astToInfixStr(e) + ")";
+        Ln(e) : "#Ln(" + astToInfixStr(e) + ")";
+        Var(v) : v;
+        Int(i) : i2s(i);
+        default : "";
+    }
+}
+
+astToBaseMonomial(ast : Exp) -> BaseMonomial {
+    switch (ast : Exp) {
+        Pow(eR, eL) : ast;
+        Neg(e) : ast;
+        Var(v) : ast;
+        Int(i) : ast;
+        default : Int(0);
+    }
+}
+
+astToBaseMonomials(monomializableAst : Exp) -> [BaseMonomial] {
+    switch (monomializableAst : Exp) {
+        Mul(eR, eL) : concat(astToBaseMonomials(eL), astToBaseMonomials(eR));
+        Pow(eR, eL) : [astToBaseMonomial(monomializableAst)];
+        Neg(e) : if (isConst(e)) { 
+            [astToBaseMonomial(monomializableAst)]; 
+        } else {
+            concat([Neg(Int(1))], astToBaseMonomials(e));
+        }
+        Var(v) : [astToBaseMonomial(monomializableAst)];
+        Int(i) : [astToBaseMonomial(monomializableAst)];
+        default : [];
+    }
+}
+
+baseMonomialToStr(baseMonomial : BaseMonomial) -> string {
+    switch (baseMonomial : BaseMonomial) {
+        Pow(eR, eL) : {
+            eLStr = baseMonomialToStr(astToBaseMonomial(eL));
+            eRStr = baseMonomialToStr(astToBaseMonomial(eR));
+            eLStr + "^" + eRStr;
+        }
+        Neg(e) : "(~" + baseMonomialToStr(astToBaseMonomial(e)) + ")";
+        Var(v) : v;
+        Int(i) : i2s(i);
+    }
+}
+
+monomialToAst(m : Monomial) -> Exp {
+    if (length(m.items) == 0) {
+        Int(0);
+    } else if (length(m.items) == 1) {
+        m.items[0];
+    } else {
+        Mul(monomialToAst(Monomial(tail(m.items))), m.items[0]);
+    }
+}
+
+astToMonomial(monomializableAst : Exp) -> Monomial {
+    Monomial(astToBaseMonomials(monomializableAst));
+}
+
+astToMonomials(polynomializableAst : Exp) -> [Monomial] {
+    switch (polynomializableAst : Exp) {
+        Add(eR, eL) : concat(astToMonomials(eL), astToMonomials(eR));
+        Mul(eR, eL) : [Monomial(astToBaseMonomials(polynomializableAst))];
+        Pow(eR, eL) : [Monomial(astToBaseMonomials(polynomializableAst))];
+        Neg(e) : [Monomial(astToBaseMonomials(polynomializableAst))];
+        Var(v) : [Monomial(astToBaseMonomials(polynomializableAst))];
+        Int(i) : [Monomial(astToBaseMonomials(polynomializableAst))];
+        default : [];
+    }
+}
+
+monomialToStr(m : Monomial) -> string {
+    strGlue(map(sortBaseMonomials(m.items), \i -> baseMonomialToStr(i)), "*");
+}
+
+polynomialToStr(p : Polynomial) -> string {
+    strGlue(map(sortMonomials(p.monomials), \i -> monomialToStr(i)), "+");
+}
+
+polynomialToAst(p : Polynomial) -> Exp {
+    revMonomials = reverseA(p.monomials);
+    if (length(revMonomials) == 0) {
+        Int(0);
+    } else {
+        firstItem = monomialToAst(revMonomials[0]);
+        if (length(revMonomials) == 1) {
+            firstItem;
+        } else {
+            Add(polynomialToAst(Polynomial(tail(revMonomials))), firstItem);
+        }
+    }
+}
+
+astToPolynomial(polynomializableAst : Exp) -> Polynomial {
+    Polynomial(astToMonomials(polynomializableAst));
+}
+
+ratioToStr(r : Ratio) -> string {
+    "(" + polynomialToStr(r.pL) + ") / (" + polynomialToStr(r.pR) + ")";
+}
+
+astToRatio(rationalizableAst : Exp) -> Ratio {
+    ast = generalizeAst(simplifyAst(rationalizableAst));
+    eR = ast.eR;
+    eL = ast.eL;
+    pR = simplifyPolynomial(astToPolynomial(distributeAst(simplifyAst(eR))));
+    pL = simplifyPolynomial(astToPolynomial(distributeAst(simplifyAst(eL))));
+    // println(pL);
+    Ratio(pR, pL);
+}
+
+
+
+// ----------------------------------------------------------------------
+//   Main program
+// ----------------------------------------------------------------------
+
+main() {
+    // println(negativateDegrees(Monomial([Pow(Int(2), Var("x"))])));
+    // flowcpp program.flow -- key1=val1 key2=val2
+    println(ratioToStr(simplifyRatio(astToRatio(strToAst("(x ^ 3 + 2 * x ^ 2 + x) / x", "infix")))));
+    println(ratioToStr(simplifyRatio(astToRatio(strToAst("3 * y * x * y ^ 2 * x ^ 4", "infix")))));
+    println(ratioToStr(simplifyRatio(astToRatio(strToAst("(x - 2) ^ 2 + (y + 1) ^ 3", "infix")))));
+    println(ratioToStr(simplifyRatio(astToRatio(strToAst("(x * y ^ 2 - y * x ^ 2) / (x * y)", "infix")))));
+    println(ratioToStr(simplifyRatio(astToRatio(strToAst("(10 + 10 * x + 10 * x^2) / (10 * x)", "infix")))));
+    quit(0);
+}
+
+
+getAllUrlParametersAsTree() -> Tree<string, string> {
+    parameters = getAllUrlParametersArray();
+    fold(parameters, makeTree(), \acc,x -> { setTree(acc, x[0], x[1]); });
+}
+/*
+getVars(parameters : Tree<string, string>) -> Tree<string, int> {
+    vars = filterTree(parameters, \k,v -> k != "expr" && k != "result");
+    foldTree(vars, makeTree(), \k,v,acc -> { setTree(acc, k, s2i(v)); });
+}
+*/
